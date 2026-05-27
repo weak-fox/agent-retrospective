@@ -690,7 +690,7 @@ def build_main_review(summaries: list[dict[str, Any]], run: dict[str, Any]) -> s
     return "\n\n".join(
         [
             "# Agent Retrospective 总览",
-            f"生成时间：{run['run_at']}  \n数据范围：{first[:16]} 到 {last[:16]}  \n本次扫描：{run['total_sessions']} 个 session，新增 {run['new_sessions']} 个，变更 {run['changed_sessions']} 个，活跃跳过 {run.get('volatile_sessions', 0)} 个，未变更 {run['unchanged_sessions']} 个。",
+            f"生成时间：{run['run_at']}\n\n数据范围：{first[:16]} 到 {last[:16]}\n\n本次扫描：{run['total_sessions']} 个 session，新增 {run['new_sessions']} 个，变更 {run['changed_sessions']} 个，活跃跳过 {run.get('volatile_sessions', 0)} 个，未变更 {run['unchanged_sessions']} 个。",
             "## 1. 总体画像",
             "\n".join(
                 [
@@ -698,7 +698,7 @@ def build_main_review(summaries: list[dict[str, Any]], run: dict[str, Any]) -> s
                     f"- 累计 token 记录值：{total_tokens / 1_000_000:.1f}M。",
                     f"- 有代码修改信号的 session：{patch_sessions}。",
                     f"- 有图片生成记录的 session：{image_sessions}。",
-                    "- 主要使用方式不是简单问答，而是把 Codex 当作长期协作执行器：读代码、拆任务、生成候选、部署验证、视觉产出和问题排障并行出现。",
+                    "- 主要使用方式不是简单问答，而是把 agent 当作长期协作执行器：读代码、拆任务、生成候选、部署验证、视觉产出和问题排障并行出现。",
                 ]
             ),
             "## 2. 主题分布",
@@ -715,25 +715,25 @@ def build_main_review(summaries: list[dict[str, Any]], run: dict[str, Any]) -> s
                     "- 高消耗任务通常集中在跨仓库、跨工具或跨环境工作，最需要提前固定目标、边界、验收标准和状态记录。",
                     "- 多个 session 是只读审计、候选生成、局部实现、部署验证的分工形态。这种模式有效，但需要统一的任务台账，否则容易在长上下文里重复解释背景。",
                     "- 视觉、文档和演示类任务的效率瓶颈通常不是生成本身，而是风格边界、素材边界和验收样例是否提前说清。",
-                    "- 真实环境排障类任务依赖外部状态。后续应要求 Codex 输出“已执行命令、关键输出、最终状态、残余风险”，避免只留下过程片段。",
-                    "- 当任务超过半天或跨多个仓库时，应先让 Codex 生成一个 `目标/非目标/输入/输出/验收/风险` 的短 spec，再进入实现。",
+                    "- 真实环境排障类任务依赖外部状态。后续应要求 agent 输出“已执行命令、关键输出、最终状态、残余风险”，避免只留下过程片段。",
+                    "- 当任务超过半天或跨多个仓库时，应先让 agent 生成一个 `目标/非目标/输入/输出/验收/风险` 的短 spec，再进入实现。",
                 ]
             ),
             "## 7. 技术能力图谱",
             "\n".join(
                 [
                     "- 强项：能把代码阅读、数据准备、实现、验证和环境操作放在同一个目标链里推进。",
-                    "- 强项：善于让 Codex 生成候选、审计覆盖、制作可视化导览，这适合做复杂系统的快速认知压缩。",
+                    "- 强项：善于让 agent 生成候选、审计覆盖、制作可视化导览，这适合做复杂系统的快速认知压缩。",
                     "- 待加强：长任务的状态固化。建议每个大任务维护 `CURRENT_STATE.md` 或 issue 风格台账，记录已完成、下一步、验证命令。",
                     "- 待加强：密钥和环境信息的输入方式。建议以后把 secret 放在本机环境变量或临时文件，prompt 里只写变量名。",
                     "- 待加强：视觉任务的验收标准。建议提前给出参考图、禁用风格、页面数/比例/字体/颜色边界。",
                 ]
             ),
-            "## 8. Codex 使用手册",
+            "## 8. Agent 使用手册",
             "\n".join(
                 [
                     "- 开复杂任务：先说目标、仓库、相关路径、真实环境、允许修改范围、验收命令。",
-                    "- 做训练/评测或批量数据任务：先让 Codex 只读审计 schema、入口、质量门禁，再让子任务分别生成候选、实现和验证。",
+                    "- 做训练/评测或批量数据任务：先让 agent 只读审计 schema、入口、质量门禁，再让子任务分别生成候选、实现和验证。",
                     "- 做部署/排障：要求每一步记录命令、输出摘要、判断依据和回滚点。",
                     "- 做视觉/文档/演示：先生成 1 页或 1 个组件方向样例，通过后再批量扩展。",
                     "- 做复盘：显式触发 `$agent-retrospective`，让它只处理新增/变更 session，并结合历史结论更新总览。",
@@ -747,7 +747,7 @@ def build_main_review(summaries: list[dict[str, Any]], run: dict[str, Any]) -> s
             "\n".join(
                 [
                     "- 每个大任务开始前写 6 行：目标、非目标、输入、输出、验收、风险。",
-                    "- 每次让 Codex 动生产/远端环境前，要求先输出将执行命令和回滚策略。",
+                    "- 每次让 agent 动生产/远端环境前，要求先输出将执行命令和回滚策略。",
                     "- 每个长链路 session 都要求生成 `input -> work -> verify -> report` 的状态表。",
                     "- 每周触发一次 `$agent-retrospective`，看主题分布、重复卡点和 action item 是否下降。",
                     "- 所有 secret 不进 prompt：只传变量名、配置路径或让 Codex读取本机已有安全上下文。",
@@ -832,8 +832,8 @@ def build_period_report(
 
     return "\n\n".join(
         [
-            f"# {period_title} Codex 复盘：{period_key}",
-            f"生成时间：{run['run_at']}  \n覆盖 session：{len(summaries)}。",
+            f"# {period_title} Agent 复盘：{period_key}",
+            f"生成时间：{run['run_at']}\n\n覆盖 session：{len(summaries)}。",
             "## 主题分布",
             markdown_table(["主题", "Session 数", "Token 记录值"], rows) if rows else "当前周期暂无 session。",
             "## 关键 session",
