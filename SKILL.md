@@ -18,10 +18,10 @@ Do not infer this skill from generic words like review, recap, summary, retrospe
 ## Default Locations
 
 - Skill/source workspace: the repository containing this `SKILL.md`
-- Private data workspace: `.agent-retrospective-data/` under the current agent working directory
+- Private data workspace: `.agent-retrospective-data/` under the current agent working directory by default
 - Wrapper script: `scripts/run_review.sh`
 - CLI: `src/agent_retrospective/cli.py`
-- Default source adapter: `codex`, reading `$HOME/.codex`
+- Default sources: Codex, Claude Code, Cursor, and OpenCode local session locations when present
 
 Override the private data workspace with:
 
@@ -40,6 +40,8 @@ AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 src/agent_retrospective/c
 2. Read the JSON summary printed by the script and report changed counts.
 
 3. Point the user to updated files in the private workspace:
+   - `index.md`
+   - `log.md`
    - `agent_retrospective.md`
    - latest `reports/runs/YYYY-MM-DD-HHMM.md`
    - current `reports/weekly/YYYY-Www.md`
@@ -47,9 +49,17 @@ AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 src/agent_retrospective/c
 
 4. If the script reports no changed sessions, say that existing summaries were reused and no stable session was reprocessed.
 
-## Multi-Agent Direction
+## Knowledge Base Model
 
-The skill is agent-neutral at the output layer. The current CLI supports `--source codex`; future adapters should normalize other local agent histories into the same private summary and report files.
+Raw sessions are immutable sources. The private workspace is the maintained wiki layer. Use the script for deterministic bookkeeping, then let the agent use its native reading and reasoning ability to interpret changed sessions with historical context.
+
+For changed sessions, interpret the increment with three layers of context:
+
+- the current changed raw evidence
+- the previous session summary, when present
+- related historical patterns from `index.md`, `agent_retrospective.md`, weekly reports, yearly reports, and `state/session_summaries.jsonl`
+
+Do not analyze appended user input as an isolated tail; compare it against the existing goal, decisions, blockers, and outcomes.
 
 ## Privacy Rules
 

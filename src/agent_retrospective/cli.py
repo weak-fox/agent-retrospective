@@ -15,6 +15,9 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
+DEFAULT_CLAUDE_HOME = Path.home() / ".claude"
+DEFAULT_CURSOR_HOME = Path.home() / ".cursor"
+DEFAULT_OPENCODE_HOME = Path.home() / ".opencode"
 DEFAULT_DATA_ROOT_VALUE = str(Path.cwd() / ".agent-retrospective-data")
 DEFAULT_OUTPUT_ROOT = Path(
     os.environ.get(
@@ -23,6 +26,7 @@ DEFAULT_OUTPUT_ROOT = Path(
     )
 )
 STATE_DIR_NAME = "state"
+ALL_SOURCES = ["codex", "claude-code", "cursor", "opencode"]
 
 
 CATEGORY_RULES: list[tuple[str, list[str]]] = [
@@ -227,6 +231,58 @@ def load_state(state_path: Path) -> dict[str, Any]:
     return data
 
 
+def session_key(source: str, session_id: str, path: str) -> str:
+    return f"{source}:{session_id}:{path}"
+
+
+def summary_key(summary: dict[str, Any]) -> str:
+    key = summary.get("session_key")
+    if isinstance(key, str) and key:
+        return key
+    return session_key(
+        str(summary.get("agent_source") or summary.get("source") or "unknown"),
+        str(summary.get("session_id") or ""),
+        str(summary.get("source_path") or ""),
+    )
+
+
+def existing_summary_for(
+    summaries: dict[str, dict[str, Any]],
+    key: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    if key in summaries:
+        return summaries[key]
+    return summaries.get(session_id)
+
+
+def previous_fingerprint_for(
+    sessions: dict[str, dict[str, Any]],
+    key: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    value = sessions.get(key)
+    if isinstance(value, dict):
+        return value
+    value = sessions.get(session_id)
+    return value if isinstance(value, dict) else None
+
+
+def normalize_fingerprint(
+    fingerprint: dict[str, Any] | None,
+    key: str,
+    session_id: str,
+    agent_source: str,
+) -> dict[str, Any] | None:
+    if not fingerprint:
+        return None
+    normalized = dict(fingerprint)
+    normalized.setdefault("session_key", key)
+    normalized.setdefault("session_id", session_id)
+    normalized.setdefault("agent_source", agent_source)
+    return normalized
+
+
 def load_jsonl_by_id(path: Path) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     if not path.exists():
@@ -236,9 +292,12 @@ def load_jsonl_by_id(path: Path) -> dict[str, dict[str, Any]]:
             item = parse_json_line(line)
             if not item:
                 continue
+            key = summary_key(item)
+            if key:
+                records[key] = item
             session_id = item.get("session_id")
             if isinstance(session_id, str):
-                records[session_id] = item
+                records.setdefault(session_id, item)
     return records
 
 
@@ -361,7 +420,7 @@ def image_counts(codex_home: Path) -> dict[str, int]:
     return counts
 
 
-def scan_session_files(codex_home: Path) -> dict[str, dict[str, Any]]:
+def scan_codex_session_files(codex_home: Path) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     sources = [
         ("active", codex_home / "sessions"),
@@ -375,14 +434,114 @@ def scan_session_files(codex_home: Path) -> dict[str, dict[str, Any]]:
             stat = path.stat()
             entry = {
                 "session_id": session_id,
+                "agent_source": "codex",
                 "source": source,
-                "path": str(path),
+                "path": str(path.resolve()),
                 "mtime_ns": stat.st_mtime_ns,
                 "size_bytes": stat.st_size,
             }
-            previous = result.get(session_id)
+            key = session_key("codex", session_id, str(path.resolve()))
+            entry["session_key"] = key
+            previous = result.get(key)
             if not previous or entry["mtime_ns"] >= previous["mtime_ns"]:
-                result[session_id] = entry
+                result[key] = entry
+    return result
+
+
+def scan_generic_jsonl_sessions(agent_source: str, roots: list[Path]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.jsonl"):
+            stat = path.stat()
+            session_id = get_session_id(path)
+            key = session_key(agent_source, session_id, str(path.resolve()))
+            result[key] = {
+                "session_key": key,
+                "session_id": session_id,
+                "agent_source": agent_source,
+                "source": "default",
+                "path": str(path.resolve()),
+                "mtime_ns": stat.st_mtime_ns,
+                "size_bytes": stat.st_size,
+            }
+    return result
+
+
+def scan_sources(args: argparse.Namespace) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, int], list[str]]:
+    source_names = ALL_SOURCES if "all" in args.source else list(dict.fromkeys(args.source))
+    session_files: dict[str, dict[str, Any]] = {}
+    threads: dict[str, dict[str, Any]] = {}
+    session_index: dict[str, dict[str, Any]] = {}
+    images: dict[str, int] = {}
+    scanned_sources: list[str] = []
+
+    if "codex" in source_names:
+        codex_home: Path = args.codex_home.expanduser().resolve()
+        codex_files = scan_codex_session_files(codex_home)
+        if codex_files:
+            scanned_sources.append("codex")
+        session_files.update(codex_files)
+        threads.update(load_threads(codex_home))
+        session_index.update(load_session_index(codex_home))
+        images.update(image_counts(codex_home))
+
+    if "claude-code" in source_names:
+        claude_home: Path = args.claude_home.expanduser().resolve()
+        claude_files = scan_generic_jsonl_sessions("claude-code", [claude_home / "projects"])
+        if claude_files:
+            scanned_sources.append("claude-code")
+        session_files.update(claude_files)
+
+    if "cursor" in source_names:
+        cursor_home: Path = args.cursor_home.expanduser().resolve()
+        cursor_files = scan_generic_jsonl_sessions("cursor", [cursor_home])
+        if cursor_files:
+            scanned_sources.append("cursor")
+        session_files.update(cursor_files)
+
+    if "opencode" in source_names:
+        opencode_home: Path = args.opencode_home.expanduser().resolve()
+        opencode_files = scan_generic_jsonl_sessions("opencode", [opencode_home])
+        if opencode_files:
+            scanned_sources.append("opencode")
+        session_files.update(opencode_files)
+
+    return session_files, threads, session_index, images, scanned_sources
+
+
+def lineage_map(entries: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    by_session_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_size: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries.values():
+        by_session_id[str(entry["session_id"])].append(entry)
+        by_size[int(entry["size_bytes"])].append(entry)
+
+    result: dict[str, dict[str, str]] = {}
+    for group in by_session_id.values():
+        if len(group) <= 1:
+            continue
+        for entry in group:
+            result[entry["session_key"]] = {
+                "type": "same-session-id-multiple-paths",
+                "note": "same session id appears in multiple paths; treat as copy/fork candidate",
+            }
+
+    for group in by_size.values():
+        if len(group) <= 1:
+            continue
+        ids = {str(item["session_id"]) for item in group}
+        if len(ids) <= 1:
+            continue
+        for entry in group:
+            result.setdefault(
+                entry["session_key"],
+                {
+                    "type": "same-size-multiple-session-ids",
+                    "note": "same file size appears across different session ids; inspect before treating as independent",
+                },
+            )
     return result
 
 
@@ -553,7 +712,9 @@ def summarize_session(
 
     summary: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "session_key": entry.get("session_key") or session_key(str(entry.get("agent_source", "unknown")), session_id, str(entry["path"])),
         "session_id": session_id,
+        "agent_source": entry.get("agent_source", "unknown"),
         "source": entry["source"],
         "source_path": redact(entry["path"]),
         "mtime_ns": entry["mtime_ns"],
@@ -773,6 +934,16 @@ def build_run_report(changed: list[dict[str, Any]], summaries: list[dict[str, An
         for signal in summary.get("signals", []):
             top_signals[signal] += 1
     signal_rows = [[signal, count] for signal, count in top_signals.most_common(10)]
+    source_rows = [[source, count] for source, count in Counter(summary.get("agent_source", "unknown") for summary in changed).most_common()]
+    lineage_rows = [
+        [
+            summary.get("session_id", ""),
+            summary.get("lineage", {}).get("type", ""),
+            summary.get("lineage", {}).get("note", ""),
+        ]
+        for summary in changed
+        if isinstance(summary.get("lineage"), dict)
+    ]
 
     if changed:
         change_section = markdown_table(["更新时间", "Session ID", "标题", "主题"], changed_rows)
@@ -789,17 +960,110 @@ def build_run_report(changed: list[dict[str, Any]], summaries: list[dict[str, An
             markdown_table(["主题", "Session 数"], category_rows) if category_rows else "无新增主题。",
             "## 新增/变更信号",
             markdown_table(["信号", "出现次数"], signal_rows) if signal_rows else "无新增信号。",
+            "## 来源分布",
+            markdown_table(["来源", "Session 数"], source_rows) if source_rows else "无新增来源。",
+            "## 增量上下文策略",
+            "\n".join(
+                [
+                    "- 对新增/变更 session，应同时参考原始变更证据、旧 session 摘要和相关历史模式。",
+                    "- 如果是旧 session 追加用户输入，不要只看新增尾部；先读旧摘要，再判断新输入是否修正目标、决策、卡点或产出。",
+                    "- 如果出现 copy/fork 候选，先把它作为同源关系处理，避免重复统计为独立模式。",
+                ]
+            ),
+            "## Copy/Fork 候选",
+            markdown_table(["Session ID", "类型", "说明"], lineage_rows) if lineage_rows else "本次无 copy/fork 候选。",
             "## 与历史结合后的判断",
             "\n".join(
                 [
                     f"- 当前知识库共保留 {len(summaries)} 个 session 摘要。",
                     "- 如果本次变更集中在同一工作区，优先更新该项目的状态文档和验收清单。",
                     "- 如果本次无新增，说明增量索引可复用；下一次触发会继续基于 `.agent-retrospective-data/state/state.json` 判断差异。",
-                    "- 活跃跳过表示 session 文件还在最近几分钟内变化，脚本保留旧摘要并更新指纹，避免反复重算当前线程。",
+                    "- 活跃跳过表示 session 文件还在最近几分钟内变化，脚本保留旧摘要和旧指纹，避免漏掉稳定后的增量。",
                 ]
             ),
         ]
     ) + "\n"
+
+
+def build_index(summaries: list[dict[str, Any]], run: dict[str, Any]) -> str:
+    category_counts = count_by_category(summaries)
+    workspace_counts: Counter[str] = Counter(summary.get("cwd", "") for summary in summaries if summary.get("cwd"))
+    recent_rows = [
+        [
+            summary.get("updated_at", "")[:16],
+            truncate(summary.get("title", ""), 86),
+            ", ".join(summary.get("categories", [])[:2]),
+            primary_intent(summary),
+        ]
+        for summary in sorted(summaries, key=lambda item: item.get("updated_at") or "", reverse=True)[:20]
+    ]
+    category_rows = [[category, count] for category, count in category_counts.most_common()]
+    workspace_rows = [[truncate(cwd, 86), count] for cwd, count in workspace_counts.most_common(20)]
+    source_rows = [[source, count] for source, count in Counter(summary.get("agent_source", "unknown") for summary in summaries).most_common()]
+
+    return "\n\n".join(
+        [
+            "# Agent Retrospective Index",
+            f"Updated: {run['run_at']}",
+            "## Read First",
+            "\n".join(
+                [
+                    "- `agent_retrospective.md` is the long-lived synthesis.",
+                    "- `reports/runs/` contains per-run incremental reports.",
+                    "- `reports/weekly/` and `reports/yearly/` contain period summaries.",
+                    "- `state/session_summaries.jsonl` is the structured summary library.",
+                    "- `log.md` is the human-readable maintenance log.",
+                ]
+            ),
+            "## Current Reports",
+            "\n".join(
+                [
+                    f"- Latest run: `{run['run_report_path']}`",
+                    f"- Current week: `{run['weekly_report_path']}`",
+                    f"- Current year: `{run['yearly_report_path']}`",
+                    f"- Total sessions: {run['total_sessions']}",
+                ]
+            ),
+            "## Topics",
+            markdown_table(["Topic", "Sessions"], category_rows) if category_rows else "No sessions indexed yet.",
+            "## Sources",
+            markdown_table(["Source", "Sessions"], source_rows) if source_rows else "No sources indexed yet.",
+            "## Workspaces",
+            markdown_table(["Workspace", "Sessions"], workspace_rows) if workspace_rows else "No workspaces indexed yet.",
+            "## Recent Sessions",
+            markdown_table(["Updated", "Title", "Topic", "Primary Intent"], recent_rows) if recent_rows else "No recent sessions.",
+        ]
+    ) + "\n"
+
+
+def build_log_entry(run: dict[str, Any]) -> str:
+    changed = ", ".join(run.get("changed_session_ids", [])[:10]) or "none"
+    return "\n".join(
+        [
+            f"## {run['run_at']}",
+            "",
+            f"- Sources: {', '.join(run.get('sources') or []) or 'none'}",
+            f"- Scanned: {run['total_sessions']}",
+            f"- New: {run['new_sessions']}",
+            f"- Changed: {run['changed_sessions']}",
+            f"- Active skipped: {run.get('volatile_sessions', 0)}",
+            f"- Unchanged: {run['unchanged_sessions']}",
+            f"- Changed session ids: {changed}",
+            f"- Run report: `{run['run_report_path']}`",
+            "",
+        ]
+    )
+
+
+def append_log(path: Path, run: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = build_log_entry(run)
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+        content = existing.rstrip() + "\n\n" + entry
+    else:
+        content = "# Agent Retrospective Log\n\n" + entry
+    write_text(path, content)
 
 
 def build_period_report(
@@ -863,11 +1127,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Incrementally review local agent sessions.")
     parser.add_argument(
         "--source",
-        choices=["codex"],
-        default="codex",
-        help="Agent session source adapter. Only codex is implemented today.",
+        action="append",
+        choices=["all", *ALL_SOURCES],
+        default=None,
+        help="Agent session source profile. Defaults to all known local sources.",
     )
     parser.add_argument("--codex-home", type=Path, default=DEFAULT_CODEX_HOME)
+    parser.add_argument("--claude-home", type=Path, default=DEFAULT_CLAUDE_HOME)
+    parser.add_argument("--cursor-home", type=Path, default=DEFAULT_CURSOR_HOME)
+    parser.add_argument("--opencode-home", type=Path, default=DEFAULT_OPENCODE_HOME)
     parser.add_argument(
         "--output-root",
         "--repo-root",
@@ -889,8 +1157,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    source: str = args.source
-    codex_home: Path = args.codex_home.expanduser().resolve()
+    if not args.source:
+        args.source = ["all"]
     output_root: Path = args.output_root.expanduser().resolve()
     state_dir = output_root / STATE_DIR_NAME
     state_path = state_dir / "state.json"
@@ -905,13 +1173,8 @@ def main() -> int:
     state = load_state(state_path)
     previous_sessions = state.get("sessions", {})
     previous_summaries = load_jsonl_by_id(summaries_path)
-    if source != "codex":
-        raise ValueError(f"Unsupported source adapter: {source}")
-
-    threads = load_threads(codex_home)
-    session_index = load_session_index(codex_home)
-    images = image_counts(codex_home)
-    session_files = scan_session_files(codex_home)
+    session_files, threads, session_index, images, scanned_sources = scan_sources(args)
+    lineages = lineage_map(session_files)
 
     excluded = set(args.exclude_session or [])
     all_summaries_by_id: dict[str, dict[str, Any]] = {}
@@ -922,18 +1185,27 @@ def main() -> int:
     volatile_count = 0
     new_state_sessions: dict[str, dict[str, Any]] = {}
 
-    for session_id, entry in sorted(session_files.items()):
+    for key, entry in sorted(session_files.items()):
+        session_id = entry["session_id"]
         if session_id in excluded:
             continue
         fingerprint = {
+            "session_key": key,
+            "session_id": session_id,
             "path": entry["path"],
             "mtime_ns": entry["mtime_ns"],
             "size_bytes": entry["size_bytes"],
+            "agent_source": entry.get("agent_source", "unknown"),
             "source": entry["source"],
             "schema_version": SCHEMA_VERSION,
         }
-        previous = previous_sessions.get(session_id)
-        existing_summary = previous_summaries.get(session_id)
+        previous = normalize_fingerprint(
+            previous_fingerprint_for(previous_sessions, key, session_id),
+            key,
+            session_id,
+            str(entry.get("agent_source", "unknown")),
+        )
+        existing_summary = existing_summary_for(previous_summaries, key, session_id)
         is_new = previous is None
         is_recent = now_ns - int(entry["mtime_ns"]) < max(args.volatile_seconds, 0) * 1_000_000_000
         is_volatile = (
@@ -947,6 +1219,8 @@ def main() -> int:
             args.force or is_new or previous != fingerprint or existing_summary is None
         )
 
+        state_fingerprint = fingerprint
+
         if is_changed:
             summary = summarize_session(
                 entry,
@@ -954,6 +1228,8 @@ def main() -> int:
                 session_index.get(session_id, {}),
                 images.get(session_id, 0),
             )
+            if key in lineages:
+                summary["lineage"] = lineages[key]
             changed_summaries.append(summary)
             if is_new:
                 new_count += 1
@@ -963,26 +1239,56 @@ def main() -> int:
             summary = existing_summary
             if is_volatile:
                 volatile_count += 1
+                state_fingerprint = previous or fingerprint
             else:
                 unchanged_count += 1
+            if summary is not None:
+                summary.setdefault("schema_version", SCHEMA_VERSION)
+                summary.setdefault("session_key", key)
+                summary.setdefault("agent_source", entry.get("agent_source", "unknown"))
+                summary.setdefault("source_path", redact(entry["path"]))
+                if key in lineages:
+                    summary.setdefault("lineage", lineages[key])
 
-        all_summaries_by_id[session_id] = summary
-        new_state_sessions[session_id] = fingerprint
+        all_summaries_by_id[key] = summary
+        new_state_sessions[key] = state_fingerprint
 
-    summaries = sorted(all_summaries_by_id.values(), key=lambda item: item.get("created_at") or item["session_id"])
+    summaries_by_key = {summary_key(summary): summary for summary in all_summaries_by_id.values() if summary}
+    summaries = sorted(summaries_by_key.values(), key=lambda item: item.get("created_at") or item["session_id"])
     run_report_path = output_root / "reports" / "runs" / f"{now.strftime('%Y-%m-%d-%H%M')}.md"
     week_key = f"{now.isocalendar().year}-W{now.isocalendar().week:02d}"
     year = str(now.year)
     weekly_path = output_root / "reports" / "weekly" / f"{week_key}.md"
     yearly_path = output_root / "reports" / "yearly" / f"{year}.md"
+    finalized_paths: list[str] = []
+    previous_run = state.get("last_run", {}) if isinstance(state.get("last_run"), dict) else {}
+    previous_run_at = str(previous_run.get("run_at", ""))
+    previous_week = iso_week_key(previous_run_at)
+    previous_year = year_key(previous_run_at)
+    if previous_week and previous_week != week_key:
+        previous_week_summaries = [summary for summary in summaries if iso_week_key(summary.get("created_at", "")) == previous_week]
+        previous_week_path = output_root / "reports" / "weekly" / f"{previous_week}.md"
+        write_text(previous_week_path, build_period_report(previous_week_summaries, {"run_at": run_at}, "周度", previous_week))
+        finalized_paths.append(str(previous_week_path))
+    if previous_year and previous_year != year:
+        previous_year_summaries = [summary for summary in summaries if year_key(summary.get("created_at", "")) == previous_year]
+        previous_year_path = output_root / "reports" / "yearly" / f"{previous_year}.md"
+        write_text(previous_year_path, build_period_report(previous_year_summaries, {"run_at": run_at}, "年度", previous_year))
+        finalized_paths.append(str(previous_year_path))
     main_path = output_root / "agent_retrospective.md"
+    index_path = output_root / "index.md"
+    log_path = output_root / "log.md"
 
     run = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "run_at": run_at,
-        "source": source,
-        "codex_home": str(codex_home),
+        "sources": scanned_sources,
+        "requested_sources": args.source,
+        "codex_home": str(args.codex_home.expanduser().resolve()),
+        "claude_home": str(args.claude_home.expanduser().resolve()),
+        "cursor_home": str(args.cursor_home.expanduser().resolve()),
+        "opencode_home": str(args.opencode_home.expanduser().resolve()),
         "output_root": str(output_root),
         "total_sessions": len(summaries),
         "new_sessions": new_count,
@@ -991,15 +1297,21 @@ def main() -> int:
         "volatile_sessions": volatile_count,
         "excluded_sessions": sorted(excluded),
         "changed_session_ids": [summary["session_id"] for summary in changed_summaries],
+        "changed_session_keys": [summary_key(summary) for summary in changed_summaries],
         "main_review_path": str(main_path),
+        "index_path": str(index_path),
+        "log_path": str(log_path),
         "run_report_path": str(run_report_path),
         "weekly_report_path": str(weekly_path),
         "yearly_report_path": str(yearly_path),
+        "finalized_period_report_paths": finalized_paths,
     }
 
     write_jsonl(summaries_path, summaries)
     append_unique_run(runs_path, run)
     write_text(main_path, build_main_review(summaries, run))
+    write_text(index_path, build_index(summaries, run))
+    append_log(log_path, run)
     write_text(run_report_path, build_run_report(changed_summaries, summaries, run))
 
     weekly_summaries = [summary for summary in summaries if iso_week_key(summary.get("created_at", "")) == week_key]
@@ -1010,8 +1322,12 @@ def main() -> int:
     state_out = {
         "schema_version": SCHEMA_VERSION,
         "last_run_at": run_at,
-        "source": source,
-        "codex_home": str(codex_home),
+        "sources": scanned_sources,
+        "requested_sources": args.source,
+        "codex_home": str(args.codex_home.expanduser().resolve()),
+        "claude_home": str(args.claude_home.expanduser().resolve()),
+        "cursor_home": str(args.cursor_home.expanduser().resolve()),
+        "opencode_home": str(args.opencode_home.expanduser().resolve()),
         "output_root": str(output_root),
         "sessions": new_state_sessions,
         "last_run": run,

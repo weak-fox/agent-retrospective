@@ -1,16 +1,18 @@
+**Language:** English | [简体中文](README.zh-CN.md)
+
 # agent-retrospective
 
-Explicit-only Codex skill and local-first CLI for incremental AI agent session retrospectives.
+Explicit-only Codex skill and local-first CLI for maintaining a private LLM wiki over AI agent session history.
 
-`agent-retrospective` turns local agent history into a private, continuously updated reflection knowledge base. It is designed for developers who want to review how they use Codex today, while leaving room for Claude Code, Cursor CLI, OpenCode, and other agent sources later.
+`agent-retrospective` turns local agent sessions into a continuously updated reflection knowledge base. Raw sessions stay where each agent stores them; this project maintains the private wiki layer: indexes, structured summaries, run reports, weekly reports, yearly reports, and a long-lived synthesis.
 
 ## Why This Exists
 
-- Incremental review: only new or changed sessions are summarized after the first run.
-- Explicit trigger: the skill runs only when the user names `$agent-retrospective`.
-- Local-first privacy: raw sessions stay in the agent's local data directory.
-- Private output repository: generated reports live in `.agent-retrospective-data/` by default.
-- Multi-agent direction: the storage model and CLI expose a `--source` adapter boundary.
+- Incremental review: process new or changed sessions without rereading everything.
+- Explicit trigger: run only when the user names `$agent-retrospective`.
+- Agent-native analysis: guide the workflow without restricting how agents inspect files.
+- Local-first privacy: raw sessions stay local and generated reports live in a private data directory.
+- Wiki layer: maintain `index.md`, `log.md`, reports, and structured summaries so future runs have context.
 
 ## Quick Start
 
@@ -32,11 +34,41 @@ Use a custom private data location:
 AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 src/agent_retrospective/cli.py
 ```
 
-The current implemented source adapter is Codex:
+By default, the CLI uses the fixed private data directory `.agent-retrospective-data/` under the current workspace. This is code behavior, not just prompt guidance. Override it only when you want a different private data repository.
+
+The built-in source profiles are tried by default:
+
+- Codex: `~/.codex`
+- Claude Code: `~/.claude/projects`
+- Cursor: `~/.cursor`
+- OpenCode: `~/.opencode`
+
+Only existing session directories are scanned. You can narrow the run:
 
 ```bash
-python3 src/agent_retrospective/cli.py --source codex --codex-home ~/.codex
+python3 src/agent_retrospective/cli.py --source codex
 ```
+
+## Install In Agents
+
+Codex:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R /path/to/agent-retrospective ~/.codex/skills/agent-retrospective
+```
+
+Claude Code:
+
+```bash
+cp AGENTS.md CLAUDE.md /path/to/project/
+```
+
+Cursor / OpenCode:
+
+- Add this repository to the project or user-level agent context.
+- Point the agent at `SKILL.md` and `scripts/run_review.sh`.
+- Invoke the workflow explicitly as `agent-retrospective`.
 
 ## Repository Split
 
@@ -45,31 +77,33 @@ Recommended setup:
 - Public skill repository: `agent-retrospective`
 - Private generated-data repository: `agent-retrospective-data`
 
-The generated data repository can include local paths, project names, time lines, remote environment clues, and personal workflow summaries. Keep it private.
+The private data repository can include local paths, project names, timelines, remote environment clues, and personal workflow summaries. Keep it private.
 
 ## Directory Layout
 
 ```text
 agent-retrospective/
-├── SKILL.md                         # Codex skill trigger policy and workflow
-├── README.md                        # English project overview
-├── README.zh-CN.md                  # Chinese project overview
+├── AGENTS.md
+├── CLAUDE.md
+├── SKILL.md
+├── README.md
+├── README.zh-CN.md
 ├── agents/
-│   └── openai.yaml                  # Codex UI metadata
-├── references/
-│   └── multi-agent-architecture.md  # Adapter and data-model notes
+│   └── openai.yaml
 ├── scripts/
-│   └── run_review.sh                # Stable wrapper used by the skill
+│   └── run_review.sh
 └── src/
     └── agent_retrospective/
         ├── __init__.py
-        └── cli.py                   # Incremental scanner and report generator
+        └── cli.py
 ```
 
 Generated private data is ignored by this repository:
 
 ```text
 .agent-retrospective-data/
+├── index.md
+├── log.md
 ├── agent_retrospective.md
 ├── reports/
 │   ├── runs/YYYY-MM-DD-HHMM.md
@@ -81,27 +115,26 @@ Generated private data is ignored by this repository:
     └── review_runs.jsonl
 ```
 
-## Source Adapter Direction
+## How Incremental Review Works
 
-Today, `--source codex` reads:
+The CLI maintains fingerprints in `state/state.json` and structured summaries in `state/session_summaries.jsonl`.
 
-- `$HOME/.codex/sessions/**/*.jsonl`
-- `$HOME/.codex/archived_sessions/**/*.jsonl`
-- `$HOME/.codex/state_5.sqlite`
-- `$HOME/.codex/session_index.jsonl`
-- `$HOME/.codex/generated_images/`
+A session is keyed by source, session id, and path. This keeps copied or forked sessions from overwriting each other. A session is treated as changed when its stored fingerprint differs from the current file metadata. Older sessions with newly appended user input are therefore picked up as changes. Active sessions that are still changing are skipped temporarily without advancing their stored fingerprint, so they remain pending for a later stable run.
 
-Future adapters should normalize other agents into the same summary fields: `session_id`, `source`, `cwd`, `title`, `created_at`, `updated_at`, `user_intents`, `tool/function counts`, `signals`, and privacy-redacted evidence.
+Each run refreshes:
 
-See [references/multi-agent-architecture.md](references/multi-agent-architecture.md) for the extension model.
+- `index.md`: agent-readable map of the private wiki
+- `log.md`: human-readable maintenance timeline
+- `agent_retrospective.md`: long-lived synthesis
+- `reports/runs/YYYY-MM-DD-HHMM.md`: current run report
+- `reports/weekly/YYYY-Www.md`: current week report
+- `reports/yearly/YYYY.md`: current year report
+
+When a run crosses into a new week or year, the previous week or year report is refreshed once more as a finalized period summary.
 
 ## Privacy Model
 
-- Do not copy raw session JSONL files into this repository.
+- Do not copy raw session files into this repository.
 - Do not commit generated data to the public skill repository.
 - Secret-like strings are redacted before summary output.
 - Generated data is intentionally detailed and should live in a private repository.
-
-## Chinese Docs
-
-中文说明见 [README.zh-CN.md](README.zh-CN.md)。
