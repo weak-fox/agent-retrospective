@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent Retrospective"
+  short_description: "Incremental personal agent retrospectives"
+  default_prompt: "Use $agent-retrospective to update my incremental agent session retrospective."
+policy:
+  allow_implicit_invocation: false
