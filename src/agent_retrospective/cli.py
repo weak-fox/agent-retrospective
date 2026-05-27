@@ -15,7 +15,6 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
-DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT_VALUE = str(Path.cwd() / ".agent-retrospective-data")
 DEFAULT_OUTPUT_ROOT = Path(
     os.environ.get(
@@ -750,7 +749,7 @@ def build_main_review(summaries: list[dict[str, Any]], run: dict[str, Any]) -> s
                     "- 每次让 agent 动生产/远端环境前，要求先输出将执行命令和回滚策略。",
                     "- 每个长链路 session 都要求生成 `input -> work -> verify -> report` 的状态表。",
                     "- 每周触发一次 `$agent-retrospective`，看主题分布、重复卡点和 action item 是否下降。",
-                    "- 所有 secret 不进 prompt：只传变量名、配置路径或让 Codex读取本机已有安全上下文。",
+                    "- 所有 secret 不进 prompt：只传变量名、配置路径或让 agent 读取本机已有安全上下文。",
                 ]
             ),
         ]
@@ -862,6 +861,12 @@ def write_text(path: Path, content: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Incrementally review local agent sessions.")
+    parser.add_argument(
+        "--source",
+        choices=["codex"],
+        default="codex",
+        help="Agent session source adapter. Only codex is implemented today.",
+    )
     parser.add_argument("--codex-home", type=Path, default=DEFAULT_CODEX_HOME)
     parser.add_argument(
         "--output-root",
@@ -884,6 +889,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    source: str = args.source
     codex_home: Path = args.codex_home.expanduser().resolve()
     output_root: Path = args.output_root.expanduser().resolve()
     state_dir = output_root / STATE_DIR_NAME
@@ -899,6 +905,9 @@ def main() -> int:
     state = load_state(state_path)
     previous_sessions = state.get("sessions", {})
     previous_summaries = load_jsonl_by_id(summaries_path)
+    if source != "codex":
+        raise ValueError(f"Unsupported source adapter: {source}")
+
     threads = load_threads(codex_home)
     session_index = load_session_index(codex_home)
     images = image_counts(codex_home)
@@ -972,6 +981,7 @@ def main() -> int:
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "run_at": run_at,
+        "source": source,
         "codex_home": str(codex_home),
         "output_root": str(output_root),
         "total_sessions": len(summaries),
@@ -1000,6 +1010,7 @@ def main() -> int:
     state_out = {
         "schema_version": SCHEMA_VERSION,
         "last_run_at": run_at,
+        "source": source,
         "codex_home": str(codex_home),
         "output_root": str(output_root),
         "sessions": new_state_sessions,

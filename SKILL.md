@@ -19,13 +19,14 @@ Do not infer this skill from generic words like review, recap, summary, retrospe
 
 - Skill/source workspace: the repository containing this `SKILL.md`
 - Private data workspace: `.agent-retrospective-data/` under the current agent working directory
-- Script: `scripts/agent_retrospective.py`
-- Default Codex data source: `$HOME/.codex`
+- Wrapper script: `scripts/run_review.sh`
+- CLI: `src/agent_retrospective/cli.py`
+- Default source adapter: `codex`, reading `$HOME/.codex`
 
 Override the private data workspace with:
 
 ```bash
-AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 scripts/agent_retrospective.py
+AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 src/agent_retrospective/cli.py
 ```
 
 ## Workflow
@@ -33,7 +34,7 @@ AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 scripts/agent_retrospecti
 1. Run the incremental scanner from the skill/source workspace:
 
    ```bash
-   python3 scripts/agent_retrospective.py
+   scripts/run_review.sh
    ```
 
 2. Read the JSON summary printed by the script and report changed counts.
@@ -45,6 +46,10 @@ AGENT_RETROSPECTIVE_ROOT=/path/to/private-data python3 scripts/agent_retrospecti
    - current `reports/yearly/YYYY.md`
 
 4. If the script reports no changed sessions, say that existing summaries were reused and no stable session was reprocessed.
+
+## Multi-Agent Direction
+
+The skill is agent-neutral at the output layer. The current CLI supports `--source codex`; future adapters should normalize other local agent histories into the same private summary and report files.
 
 ## Privacy Rules
 
